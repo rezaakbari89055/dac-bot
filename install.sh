@@ -14,50 +14,58 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
-echo -e "${YELLOW}[1/5] نصب پیش‌نیازهای سیستم...${NC}"
+echo -e "${YELLOW}[1/5] بررسی و نصب پیش‌نیازها...${NC}"
 apt-get update -y
 apt-get install -y python3 python3-pip python3-venv wget curl qrencode
 
-echo -e "${YELLOW}[2/5] تنظیم دیتابیس (بدون آسیب به x-ui)...${NC}"
+echo -e "${YELLOW}[2/5] بررسی و تنظیم دیتابیس SQL...${NC}"
 
-# بررسی اینکه آیا اصلا دیتابیسی روی سرور نصب است یا خیر
+# بررسی اینکه آیا اصلا MySQL یا MariaDB روی سرور نصب است یا خیر
 if ! command -v mysql &> /dev/null; then
-    echo -e "${YELLOW}دیتابیسی روی سرور یافت نشد، در حال نصب MariaDB...${NC}"
+    echo -e "${YELLOW}دیتابیس SQL روی سرور یافت نشد (پنل x-ui از فایل SQLite استفاده میکند).${NC}"
+    echo -e "${YELLOW}در حال نصب خودکار MariaDB برای ربات DAC...${NC}"
     apt-get install -y mariadb-server libmariadb-dev-compat libmariadb-dev-dev -y
+    systemctl start mariadb
+    systemctl enable mariadb
+    MYSQL_ROOT_PASS="" # چون تازه نصب شده، رمز root خالی است
+else
+    echo -e "${YELLOW}یک دیتابیس SQL از قبل روی سرور وجود دارد.${NC}"
+    systemctl start mysql 2>/dev/null || systemctl start mariadb 2>/dev/null
+    
+    # بررسی اینکه آیا این دیتابیس از قبل رمز دارد یا خیر
+    if ! mysql -u root -e "USE mysql;" &> /dev/null; then
+        echo -e "${RED}دیتابیس موجود دارای رمز root است.${NC}"
+        echo -e "${YELLOW}توجه: هنگام تایپ رمز هیچ کاراکتری نمایش داده نمی‌شود.${NC}"
+        read -s -p "لطفاً رمز root دیتابیس موجود را وارد کنید: " MYSQL_ROOT_PASS
+        echo ""
+        
+        # تست کردن رمز وارد شده
+        if ! mysql -u root -p"$MYSQL_ROOT_PASS" -e "SELECT 1;" &> /dev/null; then
+            echo -e "${RED}خطا! رمز وارد شده اشتباه است. نصب متوقف شد.${NC}"
+            exit 1
+        fi
+    else
+        MYSQL_ROOT_PASS="" # رمز ندارد
+    fi
 fi
 
-# استارت کردن دیتابیس (پشتیبانی از هر دو نام mysql و mariadb)
-systemctl start mariadb 2>/dev/null || systemctl start mysql 2>/dev/null
+# ساخت دیتابیس اختصاصی برای ربات (با یا بدون رمز)
+if [ -z "$MYSQL_ROOT_PASS" ]; then
+    MYSQL_CMD="mysql -u root"
+else
+    MYSQL_CMD="mysql -u root -p$MYSQL_ROOT_PASS"
+fi
 
 DB_NAME="dac_db_$(openssl rand -hex 3)"
 DB_USER="dac_user_$(openssl rand -hex 3)"
 DB_PASS=$(openssl rand -hex 16)
 
-MYSQL_CMD="mysql -u root"
-
-# بررسی اینکه آیا دیتابیس رمز root دارد یا خیر
-if ! mysql -u root -e "USE mysql;" &> /dev/null; then
-    echo -e "${YELLOW}دیتابیس دارای رمز root است.${NC}"
-    echo -e "${RED}توجه: هنگام تایپ رمز، هیچ کاراکتری روی صفحه نمایش داده نمی‌شود (برای امنیت).${NC}"
-    echo -e "${RED}لطفاً رمز را دقیقاً تایپ کنید و در نهایت دکمه Enter را بزنید.${NC}"
-    read -s MYSQL_ROOT_PASS
-    echo "" # خط خالی برای زیبایی
-    MYSQL_CMD="mysql -u root -p$MYSQL_ROOT_PASS"
-fi
-
-# تست اتصال به دیتابیس
-if ! $MYSQL_CMD -e "SELECT 1;" &> /dev/null; then
-    echo -e "${RED}خطا! رمز دیتابیس اشتباه است یا سرویس دیتابیس خراب است.${NC}"
-    exit 1
-fi
-
-# ساخت دیتابیس و یوزر اختصاصی برای ربات DAC
  $MYSQL_CMD -e "CREATE DATABASE IF NOT EXISTS $DB_NAME CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
  $MYSQL_CMD -e "CREATE USER IF NOT EXISTS '$DB_USER'@'localhost' IDENTIFIED BY '$DB_PASS';"
  $MYSQL_CMD -e "GRANT ALL PRIVILEGES ON $DB_NAME.* TO '$DB_USER'@'localhost';"
  $MYSQL_CMD -e "FLUSH PRIVILEGES;"
 
-echo -e "${GREEN}دیتابیس با موفقیت و بدون تداخل با پنل قبلی ایجاد شد.${NC}"
+echo -e "${GREEN}دیتابیس ربات DAC با موفقیت ایجاد شد (بدون تداخل با x-ui).${NC}"
 
 echo -e "${YELLOW}[3/5] دریافت اطلاعات ربات...${NC}"
 read -p "توکن ربات تلگرام را وارد کنید: " BOT_TOKEN
