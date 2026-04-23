@@ -16,28 +16,48 @@ fi
 
 echo -e "${YELLOW}[1/5] نصب پیش‌نیازهای سیستم...${NC}"
 apt-get update -y
-apt-get install -y python3 python3-pip python3-venv mariadb-server libmariadb-dev-compat libmariadb-dev-dev wget curl qrencode
+apt-get install -y python3 python3-pip python3-venv wget curl qrencode
 
-echo -e "${YELLOW}[2/5] تنظیم دیتابیس MariaDB (بدون آسیب به x-ui)...${NC}"
-systemctl start mariadb 2>/dev/null || true 
+echo -e "${YELLOW}[2/5] تنظیم دیتابیس (بدون آسیب به x-ui)...${NC}"
+
+# بررسی اینکه آیا اصلا دیتابیسی روی سرور نصب است یا خیر
+if ! command -v mysql &> /dev/null; then
+    echo -e "${YELLOW}دیتابیسی روی سرور یافت نشد، در حال نصب MariaDB...${NC}"
+    apt-get install -y mariadb-server libmariadb-dev-compat libmariadb-dev-dev -y
+fi
+
+# استارت کردن دیتابیس (پشتیبانی از هر دو نام mysql و mariadb)
+systemctl start mariadb 2>/dev/null || systemctl start mysql 2>/dev/null
 
 DB_NAME="dac_db_$(openssl rand -hex 3)"
 DB_USER="dac_user_$(openssl rand -hex 3)"
 DB_PASS=$(openssl rand -hex 16)
 
-MYSQL_ROOT_PASS=""
-if mysql -u root -e "" 2>/dev/null; then
-    MYSQL_ROOT_PASS=""
-else
-    echo -e "${YELLOW}دیتابیس رمز root دارد. رمز root دیتابیس (رمز x-ui) را وارد کنید:${NC}"
+MYSQL_CMD="mysql -u root"
+
+# بررسی اینکه آیا دیتابیس رمز root دارد یا خیر
+if ! mysql -u root -e "USE mysql;" &> /dev/null; then
+    echo -e "${YELLOW}دیتابیس دارای رمز root است.${NC}"
+    echo -e "${RED}توجه: هنگام تایپ رمز، هیچ کاراکتری روی صفحه نمایش داده نمی‌شود (برای امنیت).${NC}"
+    echo -e "${RED}لطفاً رمز را دقیقاً تایپ کنید و در نهایت دکمه Enter را بزنید.${NC}"
     read -s MYSQL_ROOT_PASS
+    echo "" # خط خالی برای زیبایی
+    MYSQL_CMD="mysql -u root -p$MYSQL_ROOT_PASS"
 fi
 
-mysql -u root -p"$MYSQL_ROOT_PASS" -e "CREATE DATABASE IF NOT EXISTS $DB_NAME CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;" 2>/dev/null || { echo "خطا در ساخت دیتابیس!"; exit 1; }
-mysql -u root -p"$MYSQL_ROOT_PASS" -e "CREATE USER IF NOT EXISTS '$DB_USER'@'localhost' IDENTIFIED BY '$DB_PASS';"
-mysql -u root -p"$MYSQL_ROOT_PASS" -e "GRANT ALL PRIVILEGES ON $DB_NAME.* TO '$DB_USER'@'localhost';"
-mysql -u root -p"$MYSQL_ROOT_PASS" -e "FLUSH PRIVILEGES;"
-echo -e "${GREEN}دیتابیس ایجاد شد.${NC}"
+# تست اتصال به دیتابیس
+if ! $MYSQL_CMD -e "SELECT 1;" &> /dev/null; then
+    echo -e "${RED}خطا! رمز دیتابیس اشتباه است یا سرویس دیتابیس خراب است.${NC}"
+    exit 1
+fi
+
+# ساخت دیتابیس و یوزر اختصاصی برای ربات DAC
+ $MYSQL_CMD -e "CREATE DATABASE IF NOT EXISTS $DB_NAME CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+ $MYSQL_CMD -e "CREATE USER IF NOT EXISTS '$DB_USER'@'localhost' IDENTIFIED BY '$DB_PASS';"
+ $MYSQL_CMD -e "GRANT ALL PRIVILEGES ON $DB_NAME.* TO '$DB_USER'@'localhost';"
+ $MYSQL_CMD -e "FLUSH PRIVILEGES;"
+
+echo -e "${GREEN}دیتابیس با موفقیت و بدون تداخل با پنل قبلی ایجاد شد.${NC}"
 
 echo -e "${YELLOW}[3/5] دریافت اطلاعات ربات...${NC}"
 read -p "توکن ربات تلگرام را وارد کنید: " BOT_TOKEN
@@ -55,7 +75,7 @@ mkdir -p /opt/dac-bot
 cd /opt/dac-bot
 
 if [ ! -f "main.py" ]; then
-    echo -e "${RED}خطا: فایل‌های پایتون در /opt/dac-bot یافت نشد! لطفا سورس را در این مسیر بریزید.${NC}"
+    echo -e "${RED}خطا: فایل‌های پایتون در /opt/dac-bot یافت نشد!${NC}"
     exit 1
 fi
 
@@ -80,7 +100,7 @@ echo -e "${YELLOW}[5/5] راه‌اندازی سرویس DAC...${NC}"
 cat <<EOF > /etc/systemd/system/dac-bot.service
 [Unit]
 Description=DAC VPN Selling Bot
-After=network.target mysql.service
+After=network.target mysql.service mariadb.service
 
 [Service]
 User=root
@@ -105,6 +125,6 @@ if systemctl is-active --quiet dac-bot; then
     echo -e "${GREEN} 🎉 ربات DAC با موفقیت نصب و روشن شد! 🎉${NC}"
     echo -e "${GREEN}=====================================================${NC}"
 else
-    echo -e "${RED}خطایی در اجرای ربات رخ داد. لاگ‌ها:${NC}"
-    echo "journalctl -u dac-bot -n 20"
+    echo -e "${RED}خطایی در اجرای ربات رخ داد. لاگ‌ها را با دستور زیر بررسی کنید:${NC}"
+    echo "journalctl -u dac-bot -n 30 --no-pager"
 fi
